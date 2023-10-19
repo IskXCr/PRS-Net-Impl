@@ -1,1 +1,7 @@
-./test
+# Python related
+__pycache__
+
+# Project related
+test
+misc
+data/voxel_data
