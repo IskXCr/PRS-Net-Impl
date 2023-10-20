@@ -4,5 +4,4 @@ __pycache__
 # Project related
 test
 misc
-data/voxel_data
 .vscode
