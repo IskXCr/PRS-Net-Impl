@@ -24,9 +24,9 @@ def compute_standard_grid_centers():
     x = x.reshape(-1, 1)
     y = y.reshape(-1, 1)
     z = z.reshape(-1, 1)
-    coords = np.concatenate([x, y, z], axis=1)
+    std_centers = np.concatenate([x, y, z], axis=1)
     
-    return coords
+    return std_centers
 
 
 def compute_offset_vector_from_std(std_centers, voxel_grid):
@@ -42,6 +42,80 @@ def compute_offset_vector_from_std(std_centers, voxel_grid):
     
     offset_vec = np.mean(vcenters - std_centers, axis=0)
     return offset_vec
+
+
+def compute_closest_points_to_grids(mesh, grid_centers):
+    '''
+    Precompute, for each grid, the closest point on the mesh to that specific grid. 
+    
+    Return a tensor size of 32x32x32x3.
+    
+    The mesh itself must has already been normalized.
+    '''
+    mesh0 = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    _ = scene.add_triangles(mesh0)
+    ans = scene.compute_closest_points(np.array(grid_centers, dtype=np.float32))
+    return ans['points'].numpy()
+
+
+def compute_std_grid_indices(query_points):
+    '''
+    Compute the corresponding grid indices in std space of the given sample points.
+    '''
+    bounds = torch.linspace(-1.0, 1.0, 33)
+    primitive_coords = (bounds[1:] + bounds[:-1]) / 2
+    
+    spt = query_points.T
+    xs = spt[0]
+    ys = spt[1]
+    zs = spt[2]
+    
+    x = torch.searchsorted(primitive_coords, xs) - 1
+    y = torch.searchsorted(primitive_coords, ys) - 1
+    z = torch.searchsorted(primitive_coords, zs) - 1
+    x[x < 0] = 0
+    y[y < 0] = 0
+    z[z < 0] = 0
+    
+    x = x.reshape(-1, 1)
+    y = y.reshape(-1, 1)
+    z = z.reshape(-1, 1)
+    return torch.cat([x, y, z], dim=1)
+
+
+def compute_batch_std_grid_indices(batch_query_points):
+    '''
+    `batch_query_points` should be of shape `(M, N, 3)`.
+    
+    Return a tensor of shape `(M, 3, N)`, where
+    - `M` is the number of samples inside the batch,
+    - `N` is the number of queries inside a single sample.
+    '''
+    bounds = torch.linspace(-1.0, 1.0, 33)
+    primitive_coords = (bounds[1:] + bounds[:-1]) / 2
+    
+    n_samples = batch_query_points.shape[1]
+    
+    tmp0: torch.Tensor = batch_query_points.transpose(1, 2)
+    xs = tmp0[:, 0].reshape((1, -1))
+    ys = tmp0[:, 1].reshape((1, -1))
+    zs = tmp0[:, 2].reshape((1, -1))
+
+    x = torch.searchsorted(primitive_coords, xs) - 1
+    y = torch.searchsorted(primitive_coords, ys) - 1
+    z = torch.searchsorted(primitive_coords, zs) - 1
+    
+    x[x < 0] = 0
+    y[y < 0] = 0
+    z[z < 0] = 0
+    
+    x = x.reshape((-1, 1, n_samples))
+    y = y.reshape((-1, 1, n_samples))
+    z = z.reshape((-1, 1, n_samples))
+    
+    result = torch.concat([x, y, z], dim=1)
+    return result
 
 
 def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()):
@@ -65,21 +139,6 @@ def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()
 
     offset_vec = compute_offset_vector_from_std(std_centers, voxel_grid)
     return (mesh, omap, offset_vec)
-
-
-def compute_closest_points_to_grids(mesh, grid_centers):
-    '''
-    Precompute, for each grid, the closest point on the mesh to that specific grid. 
-    
-    Return a tensor size of 32x32x32x3.
-    
-    The mesh itself must has already been normalized.
-    '''
-    mesh0 = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-    scene = o3d.t.geometry.RaycastingScene()
-    _ = scene.add_triangles(mesh0)
-    ans = scene.compute_closest_points(np.array(grid_centers, dtype=np.float32))
-    return ans['points'].numpy()
 
 
 def preprocess_files(src_path, dst_path):
@@ -120,7 +179,7 @@ def preprocess_files(src_path, dst_path):
     print(f'{len(files)} file(s) have been processed.')
 
 
-def read_data_from_path(src_path):
+def read_dataset_from_path(src_path):
     '''
     Read all meshes and voxelized data from a path. They must be produced by `preprocess_files` or the behavior is undefined.
     
@@ -156,7 +215,7 @@ def read_data_from_path(src_path):
             else:
                 data[index] = [(0, mesh)]
         elif path.endswith('.omap'):
-            omap = np.loadtxt(path, dtype=int).reshape((32, 32, 32))
+            omap = np.loadtxt(path, dtype=np.int32).reshape((32, 32, 32))
             if index in data:
                 data[index].append((1, omap))
             else:
@@ -189,21 +248,50 @@ def read_data_from_path(src_path):
     return result
 
 
-def prepare_data_entry(data_entry):
+def sample(mesh, offset_vec, num):
     '''
-    Return `tuple(mesh, omap, grid_points, offset_vector, sample_points)`
+    Return sampled points.
     '''
-    mesh = data_entry[0]
-    pcd = mesh.sample_points_uniformly(number_of_points=1000)
-    sample_points = np.asarray(pcd.points)[:] - data_entry[3]
-    return (data_entry[0], torch.tensor(data_entry[1]), torch.tensor(data_entry[2]), torch.tensor(data_entry[3]), torch.tensor(sample_points))
+    pcd = mesh.sample_points_uniformly(number_of_points=num)
+    sample_points = np.asarray(pcd.points)[:] - offset_vec
+    return sample_points
 
 
-def prepare_data(data):
-    result = []
-    for entry in data:
-        result.append(prepare_data_entry(entry))
-    return result
+def prepare_dataset(dataset, sample_num=1000):
+    '''
+    Input: `tuple(mesh, omap, grid_points, offset_vector, sample_points`
+    
+    Return: `tuple(mesh_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points)`
+    '''
+    mesh_lst = []
+    omap_lst = []
+    grid_points_lst = []
+    offset_vector_lst = []
+    sample_points_lst = []
+    
+    for entry in dataset:
+        mesh_lst.append(entry[0])
+        omap_lst.append(torch.tensor(entry[1].reshape(1, 1, 32, 32, 32), dtype=torch.float32))
+        grid_points_lst.append(torch.tensor(entry[2].reshape(1, 32, 32, 32, 3)))
+        offset_vector_lst.append(torch.tensor(entry[3].reshape(1, 1, 3)))
+        sample_points_lst.append(torch.tensor(sample(entry[0], entry[3], sample_num).reshape(1, -1, 3)))
+        
+    # batch_mesh = torch.concat(mesh_lst, dim=0)
+    batch_omap = torch.concat(omap_lst, dim=0)
+    batch_grid_points = torch.concat(grid_points_lst, dim=0)
+    batch_offset_vector = torch.concat(offset_vector_lst, dim=0)
+    batch_sample_points = torch.concat(sample_points_lst, dim=0)
+    
+    print(f'{len(mesh_lst)} dataset(s) have been prepared. ')
+    
+    return mesh_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points
+
+
+def split_dataset(data, batch_size=25):
+    '''
+    Split data into batches, each of `batch_size` size. Return a list of datasets.
+    '''
+    pass
 
 
 if __name__ == '__main__':
