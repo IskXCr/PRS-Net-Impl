@@ -1,9 +1,8 @@
 import open3d as o3d
 import numpy as np
+import torch
 import open3d.visualization as vis
-
-import open3d as o3d
-import numpy as np
+from torch.utils.data import Dataset
 
 def sliceplane(mesh, axis, value, direction):
     # axis can be 0,1,2 (which corresponds to x,y,z)
@@ -161,7 +160,12 @@ def visualize_quat_symmetry(mesh, quaternion):
     '''
     `quaternion` should be a (4, ) numpy array, describing the quaternion `a + bi + cj + dk`.
     '''
-    pass
+    normal = np.array(quaternion[1:4])
+    if quaternion[0] == 1.:
+        normal = np.zeros((3,))
+    else:
+        normal = normal / np.sin(np.arccos(normal[0]))
+        normal = normal / np.linalg.norm(normal)
     line_set = o3d.geometry.LineSet()
-    print(f'[visualization.py] Drawing symmetry arrow {quaternion}')
-    vis.draw_geometries([arrow, mesh])
+    print(f'[visualization.py] Drawing symmetry axis {normal}')
+    vis.draw_geometries([line_set, mesh])

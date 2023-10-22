@@ -1,7 +1,8 @@
-import torch
-from torch.utils.data import DataLoader, Dataset
 import open3d as o3d
+import torch
 import numpy as np
+from torch.utils.data import Dataset
+
 import argparse
 import os
 
@@ -154,9 +155,7 @@ def read_dataset_from_path(src_path):
     - Meshes are all normalized to $ [-1]^3 $ to $ [1]^3 $
     - Voxels are of size 32x32x32
     
-    Return a list of `data_entries` : `tuple(mesh, mat, points, offset_vector)` representing the mesh, its corresponding voxel, 
-    the precomputed closest points, and the offset vector.
-    For details on the last term, please refer to the paper.
+    Return a list of `data_entries` : `tuple(path_prefix, index)`
     '''
     o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Warning)
     files = []
@@ -170,48 +169,35 @@ def read_dataset_from_path(src_path):
     data = {}
 
     for path in files:
-        print(f'Reading: {path}')
+        print(f'Reading: "{path}"', end='')
         path: str
         l_id_index = path.rindex('voxel_grid_') + 11
         r_id_index = path.rindex('.')
         index = int(path[l_id_index:r_id_index])
+        
+        if index not in data:
+            data[index] = [path[0:path.rindex('.')], index, 0, 0, 0, 0]
+        
         if path.endswith('.obj'):
-            mesh = o3d.io.read_triangle_mesh(path, print_progress=True)
-            if index in data:
-                data[index].append((0, mesh))
-            else:
-                data[index] = [(0, mesh)]
+            data[index][2] = 1
         elif path.endswith('.omap'):
-            omap = np.loadtxt(path, dtype=np.int32).reshape((32, 32, 32))
-            if index in data:
-                data[index].append((1, omap))
-            else:
-                data[index] = [(1, omap)]
+            data[index][3] = 1
         elif path.endswith('.gridpoints'):
-            grid_points = np.loadtxt(path, dtype=np.float64).reshape((32, 32, 32, 3))
-            if index in data:
-                data[index].append((2, grid_points))
-            else:
-                data[index] = [(2, grid_points)]
+            data[index][4] = 1
         elif path.endswith('.offsetvec'):
-            offset_vec = np.loadtxt(path, dtype=np.float64).reshape((3,))
-            if index in data:
-                data[index].append((3, offset_vec))
-            else:
-                data[index] = [(3, offset_vec)]
+            data[index][5] = 1
         else:
-            print(f'Skipping uncognized format {path}')
-
+            print(' - ignored', end='')
+        print()
+        
     result = []
     for key in list(data.keys()):
-        if len(data[key]) < 4:
-            print(f'Ignoring incomplete dataset with index={key}')
-            data.pop(key)
+        if data[key][2] == 1 and data[key][3] == 1 and data[key][4] == 1 and data[key][5] == 1:
+            result.append((data[key][0], data[key][1]))
         else:
-            t0, t1, t2, t3 = sorted(data[key])
-            result.append((t0[1], t1[1], t2[1], t3[1]))
+            print(f"Ignoring incomplete dataset: {data[key][0]}")
     
-    print(f'{len(result)} dataset(s) have been processed. ')
+    print(f'Detected {len(result)} dataset(s). ')
     return result
 
 
@@ -220,12 +206,30 @@ def sample(mesh, offset_vec, num):
     Return sampled points.
     '''
     pcd = mesh.sample_points_uniformly(number_of_points=num)
-    sample_points = np.asarray(pcd.points)[:] - offset_vec
+    sample_points = np.asarray(pcd.points)[:] - offset_vec.numpy()
     return sample_points
 
 
+def prepare_single_data(data_entry, sample_num=1000):
+    '''
+    Accepts a single `data_entry` : `tuple(path_prefix, index)`.
+    '''
+    
+    index = data_entry[1]
+    mesh = o3d.io.read_triangle_mesh(data_entry[0] + '.obj', print_progress=True)
+    omap = torch.tensor((np.loadtxt(data_entry[0] + '.omap', dtype=np.int32)).reshape(1, 32, 32, 32), dtype=torch.float64)
+    grid_points = torch.tensor(np.loadtxt(data_entry[0] + '.gridpoints', dtype=np.float64)).reshape(32, 32, 32, 3)
+    offset_vector = torch.tensor(np.loadtxt(data_entry[0] + '.offsetvec', dtype=np.float64)).reshape(1, 3)
+    sample_points = torch.tensor(sample(mesh, offset_vector, sample_num).reshape(-1, 3))
+    
+    return (index, mesh, omap, grid_points, offset_vector, sample_points)
+
+
+@DeprecationWarning
 def prepare_dataset(raw_dataset, sample_num=1000):
     '''
+    This method is deprecated, as it prepares all data at once.
+    
     Input: `tuple(mesh, omap, grid_points, offset_vector`
     
     Return: `tuple(mesh, omap, grid_points, offset_vector, sample_points)`
@@ -243,6 +247,42 @@ def prepare_dataset(raw_dataset, sample_num=1000):
     print(f'{len(result_lst)} dataset(s) have been prepared. ')
     
     return result_lst
+
+
+class CustomVoxelDataset(Dataset):
+    def __init__(self, dataset_lst, sample_num=1000):
+        self.dataset_lst = dataset_lst
+        self.sample_num = sample_num
+    
+    def __len__(self):
+        return len(self.dataset_lst)
+    
+    def __getitem__(self, index):
+        return prepare_single_data(self.dataset_lst[index], self.sample_num)
+
+
+def collate_data_list(raw_dataset):
+    data_index_lst = []
+    mesh_lst = []
+    omap_lst = []
+    grid_points_lst = []
+    offset_vector_lst = []
+    sample_points_lst = []
+    
+    for entry in raw_dataset:
+        data_index_lst.append(entry[0])
+        mesh_lst.append(entry[1])
+        omap_lst.append(entry[2].reshape(1, 1, 32, 32, 32))
+        grid_points_lst.append(entry[3].reshape(1, 32, 32, 32, 3))
+        offset_vector_lst.append(entry[4].reshape(1, 1, 3))
+        sample_points_lst.append(entry[5].reshape(1, -1, 3))
+        
+    # batch_mesh = torch.concat(mesh_lst, dim=0)
+    batch_omap = torch.concat(omap_lst, dim=0)
+    batch_grid_points = torch.concat(grid_points_lst, dim=0)
+    batch_offset_vector = torch.concat(offset_vector_lst, dim=0)
+    batch_sample_points = torch.concat(sample_points_lst, dim=0)
+    return data_index_lst, mesh_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points
 
 
 if __name__ == '__main__':
