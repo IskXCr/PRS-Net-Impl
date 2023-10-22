@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader, Dataset
 import open3d as o3d
 import numpy as np
 import argparse
@@ -82,40 +83,6 @@ def compute_std_grid_indices(query_points):
     y = y.reshape(-1, 1)
     z = z.reshape(-1, 1)
     return torch.cat([x, y, z], dim=1)
-
-
-def compute_batch_std_grid_indices(batch_query_points):
-    '''
-    `batch_query_points` should be of shape `(M, N, 3)`.
-    
-    Return a tensor of shape `(M, 3, N)`, where
-    - `M` is the number of samples inside the batch,
-    - `N` is the number of queries inside a single sample.
-    '''
-    bounds = torch.linspace(-1.0, 1.0, 33)
-    primitive_coords = (bounds[1:] + bounds[:-1]) / 2
-    
-    n_samples = batch_query_points.shape[1]
-    
-    tmp0: torch.Tensor = batch_query_points.transpose(1, 2)
-    xs = tmp0[:, 0].reshape((1, -1))
-    ys = tmp0[:, 1].reshape((1, -1))
-    zs = tmp0[:, 2].reshape((1, -1))
-
-    x = torch.searchsorted(primitive_coords, xs) - 1
-    y = torch.searchsorted(primitive_coords, ys) - 1
-    z = torch.searchsorted(primitive_coords, zs) - 1
-    
-    x[x < 0] = 0
-    y[y < 0] = 0
-    z[z < 0] = 0
-    
-    x = x.reshape((-1, 1, n_samples))
-    y = y.reshape((-1, 1, n_samples))
-    z = z.reshape((-1, 1, n_samples))
-    
-    result = torch.concat([x, y, z], dim=1)
-    return result
 
 
 def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()):
@@ -221,13 +188,13 @@ def read_dataset_from_path(src_path):
             else:
                 data[index] = [(1, omap)]
         elif path.endswith('.gridpoints'):
-            grid_points = np.loadtxt(path, dtype=np.float32).reshape((32, 32, 32, 3))
+            grid_points = np.loadtxt(path, dtype=np.float64).reshape((32, 32, 32, 3))
             if index in data:
                 data[index].append((2, grid_points))
             else:
                 data[index] = [(2, grid_points)]
         elif path.endswith('.offsetvec'):
-            offset_vec = np.loadtxt(path, dtype=np.float32).reshape((3,))
+            offset_vec = np.loadtxt(path, dtype=np.float64).reshape((3,))
             if index in data:
                 data[index].append((3, offset_vec))
             else:
@@ -257,41 +224,25 @@ def sample(mesh, offset_vec, num):
     return sample_points
 
 
-def prepare_dataset(dataset, sample_num=1000):
+def prepare_dataset(raw_dataset, sample_num=1000):
     '''
-    Input: `tuple(mesh, omap, grid_points, offset_vector, sample_points`
+    Input: `tuple(mesh, omap, grid_points, offset_vector`
     
-    Return: `tuple(mesh_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points)`
+    Return: `tuple(mesh, omap, grid_points, offset_vector, sample_points)`
     '''
-    mesh_lst = []
-    omap_lst = []
-    grid_points_lst = []
-    offset_vector_lst = []
-    sample_points_lst = []
+    result_lst = []
     
-    for entry in dataset:
-        mesh_lst.append(entry[0])
-        omap_lst.append(torch.tensor(entry[1].reshape(1, 1, 32, 32, 32), dtype=torch.float32))
-        grid_points_lst.append(torch.tensor(entry[2].reshape(1, 32, 32, 32, 3)))
-        offset_vector_lst.append(torch.tensor(entry[3].reshape(1, 1, 3)))
-        sample_points_lst.append(torch.tensor(sample(entry[0], entry[3], sample_num).reshape(1, -1, 3)))
-        
-    # batch_mesh = torch.concat(mesh_lst, dim=0)
-    batch_omap = torch.concat(omap_lst, dim=0)
-    batch_grid_points = torch.concat(grid_points_lst, dim=0)
-    batch_offset_vector = torch.concat(offset_vector_lst, dim=0)
-    batch_sample_points = torch.concat(sample_points_lst, dim=0)
+    for entry in raw_dataset:
+        mesh = entry[0]
+        omap = torch.tensor(entry[1].reshape(1, 32, 32, 32), dtype=torch.float64)
+        grid_points = torch.tensor(entry[2].reshape(32, 32, 32, 3))
+        offset_vector = torch.tensor(entry[3].reshape(1, 3))
+        sample_points = torch.tensor(sample(entry[0], entry[3], sample_num).reshape(-1, 3))
+        result_lst.append((mesh, omap, grid_points, offset_vector, sample_points))
     
-    print(f'{len(mesh_lst)} dataset(s) have been prepared. ')
+    print(f'{len(result_lst)} dataset(s) have been prepared. ')
     
-    return mesh_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points
-
-
-def split_dataset(data, batch_size=25):
-    '''
-    Split data into batches, each of `batch_size` size. Return a list of datasets.
-    '''
-    pass
+    return result_lst
 
 
 if __name__ == '__main__':
