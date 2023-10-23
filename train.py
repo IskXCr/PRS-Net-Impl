@@ -10,7 +10,7 @@ parser.add_argument('--checkpoint_dst', default=os.path.join('checkpoints', 'prs
 parser.add_argument('--data_path', required=True, help='The path for preprocessed datasets. If the data have not been preprocessed, please use "impl/utils/voxel_processing.py" to convert them.')
 
 parser.add_argument('--batch_size', default=25, type=int, help='Batch size.')
-parser.add_argument('--num_epochs', default=100, type=int, help='Batch size.')
+parser.add_argument('--num_epochs', default=100, type=int, help='Number of epochs that will be used.')
 parser.add_argument('--dtype', dest='dtype', default='float32', help='The target fp type to use. Allowed: float16, float32, float64')
 
 parser.add_argument('--weight_reg', dest='w_r', default=25, type=float, help='The default w_r for summing symmetry distance loss and regularization loss. If not specified, use 25.')
