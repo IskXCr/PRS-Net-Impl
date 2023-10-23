@@ -38,27 +38,30 @@ from impl.utils.voxel_processing import CustomVoxelDataset
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-raw_data = vp.read_dataset_from_path(test_options.data_path)
-
-test_dataset = vp.CustomVoxelDataset(raw_data, test_options.sample_num)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=vp.collate_data_list)
-
 model = PRSNet()
 model.to(device=device, dtype=test_options.dtype)
 
 criterion = PRSNet_Loss(test_options.w_r)
 
-checkpoint = torch.load(test_options.checkpoint_src)
+checkpoint = torch.load(test_options.checkpoint_src, map_location=device)
 
 model.load_state_dict(checkpoint['model_state_dict'])
 test_options.w_r = checkpoint['w_r']
 criterion.w_r = checkpoint['w_r']
+test_options.sample_num = checkpoint['sample_num']
 
 print(f'The model has been loaded from: {test_options.checkpoint_src}')
 
 print('========Model Info========')
 print(model)
 print('=====End of Model Info====')
+
+print('Loading data...')
+raw_data = vp.read_dataset_from_path(test_options.data_path)
+
+test_dataset = vp.CustomVoxelDataset(raw_data, test_options.sample_num)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=vp.collate_data_list)
+print('Completed data loading.')
 
 # Inference
 with torch.no_grad():

@@ -44,11 +44,6 @@ from impl.utils.voxel_processing import CustomVoxelDataset
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-raw_data = vp.read_dataset_from_path(train_options.data_path)
-
-train_dataset = vp.CustomVoxelDataset(raw_data, train_options.sample_num)
-train_loader = DataLoader(train_dataset, batch_size=train_options.batch_size, shuffle=True, collate_fn=vp.collate_data_list)
-
 model = PRSNet()
 model.to(device=device, dtype=train_options.dtype)
 
@@ -56,13 +51,14 @@ criterion = PRSNet_Loss(train_options.w_r)
 optimizer = torch.optim.Adam(model.parameters(), lr=train_options.learning_rate, weight_decay=train_options.weight_decay)
 start_epoch = 0
 if train_options.checkpoint_src:
-    checkpoint = torch.load(train_options.checkpoint_src)
+    checkpoint = torch.load(train_options.checkpoint_src, map_location=device)
     
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
     train_options.w_r = checkpoint['w_r']
     criterion.w_r = checkpoint['w_r']
+    train_options.sample_num = checkpoint['sample_num']
     
     print(f'The model has been loaded from: {train_options.checkpoint_src}')
 else:
@@ -85,6 +81,18 @@ if os.path.exists(train_options.checkpoint_dst):
         print(f'Unrecognized option: {ans}. Exiting.')
         exit(1)
 
+print('Loading data...')
+raw_data = vp.read_dataset_from_path(train_options.data_path)
+
+train_dataset = vp.CustomVoxelDataset(raw_data, train_options.sample_num)
+train_loader = DataLoader(train_dataset, batch_size=train_options.batch_size, shuffle=True, collate_fn=vp.collate_data_list)
+print('Completed data loading.')
+
+# If there no data, quit right now.
+if not raw_data:
+    print('No data have been detected. Exiting.')
+    exit(1)
+
 # Training
 for epoch in range(start_epoch, train_options.num_epochs):
     for i, (data_indices, mesh, omap, grid_points, offset_vector, sample_points) in enumerate(train_loader):
@@ -104,7 +112,8 @@ for epoch in range(start_epoch, train_options.num_epochs):
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'w_r': criterion.w_r
+                'w_r': criterion.w_r,
+                'sample_num': train_options.sample_num
                 }, train_options.checkpoint_dst)
 
 if os.path.exists(train_options.checkpoint_dst):
