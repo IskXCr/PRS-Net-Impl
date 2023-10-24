@@ -48,7 +48,7 @@ checkpoint = torch.load(test_options.checkpoint_src, map_location=device)
 model.load_state_dict(checkpoint['model_state_dict'])
 test_options.w_r = checkpoint['w_r']
 criterion.w_r = checkpoint['w_r']
-test_options.sample_num = checkpoint['sample_num']
+model.eval()
 
 print(f'The model has been loaded from: {test_options.checkpoint_src}')
 
@@ -59,13 +59,12 @@ print('=====End of Model Info====')
 print('Loading data...')
 raw_data = vp.read_dataset_from_path(test_options.data_path)
 
-test_dataset = vp.CustomVoxelDataset(raw_data, test_options.sample_num)
+test_dataset = vp.CustomVoxelDataset(raw_data)
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=vp.collate_data_list)
-print('Completed data loading.')
 
 # Inference
 with torch.no_grad():
-    for i, (data_indices, mesh, omap, grid_points, offset_vector, sample_points) in enumerate(test_loader):
+    for i, (data_indices, omap, grid_points, offset_vector, sample_points) in enumerate(test_loader):
         omap = omap.to(device=device, dtype=test_options.dtype)
         grid_points = grid_points.to(device, dtype=test_options.dtype)
         offset_vector = offset_vector.to(device, dtype=test_options.dtype)
@@ -74,4 +73,4 @@ with torch.no_grad():
         p_features, q_features = model(omap)
         loss = criterion(p_features, q_features, grid_points, sample_points)
         
-        print(f'Data_Index:{data_indices}, Inference loss: {loss.item()}')
+        print(f'Data_Index:{data_indices}; Inference loss: {loss.item()}; p_features: {p_features / torch.norm(p_features)}; q_features: {q_features / torch.norm(q_features)}')

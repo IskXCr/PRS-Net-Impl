@@ -61,15 +61,20 @@ class PRSNet_Plane_Predictor(nn.Module):
     def __init__(self, ) -> None:
         super().__init__()
         
+        leaky_ReLU_slope = 0.2
+        
         # implicit symmetry planes: 4 features, aX + bY + cZ + d = 0
         self.fc0 = nn.Linear(64, 32)
-        self.relu0 = nn.LeakyReLU()
+        self.relu0 = nn.LeakyReLU(negative_slope=leaky_ReLU_slope)
         self.fc1 = nn.Linear(32, 16)
-        self.relu1 = nn.LeakyReLU()
+        self.relu1 = nn.LeakyReLU(negative_slope=leaky_ReLU_slope)
         self.fc2 = nn.Linear(16, 4)
     
     def set_initial_bias(self, feature):
-        self.fc2.bias.data = feature.clone()
+        self.fc2.bias.data = feature.clone().detach()
+        
+    def set_initial_weight(self):
+        self.fc2.weight.data = torch.zeros(4, 16)
         
     def forward(self, features):
         out = self.fc0(features)
@@ -85,11 +90,13 @@ class PRSNet_Quaternion_Predictor(nn.Module):
     def __init__(self, ) -> None:
         super().__init__()
         
+        leaky_ReLU_slope = 0.2
+        
         # quaterion rotation: 4 features, a + bi + cj + dk
         self.fc0 = nn.Linear(64, 32)
-        self.relu0 = nn.LeakyReLU()
+        self.relu0 = nn.LeakyReLU(negative_slope=leaky_ReLU_slope)
         self.fc1 = nn.Linear(32, 16)
-        self.relu1 = nn.LeakyReLU()
+        self.relu1 = nn.LeakyReLU(negative_slope=leaky_ReLU_slope)
         self.fc2 = nn.Linear(16, 4)
     
     def set_initial_bias(self, feature):
@@ -118,6 +125,9 @@ class PRSNet(nn.Module):
         self.plane_predictor0.set_initial_bias(torch.tensor([1., 0., 0., 0.]))
         self.plane_predictor1.set_initial_bias(torch.tensor([0., 1., 0., 0.]))
         self.plane_predictor2.set_initial_bias(torch.tensor([0., 0., 1., 0.]))
+        # self.plane_predictor0.set_initial_weight()
+        # self.plane_predictor1.set_initial_weight()
+        # self.plane_predictor2.set_initial_weight()
         
         self.quaternion_predictor0 = PRSNet_Quaternion_Predictor()
         self.quaternion_predictor1 = PRSNet_Quaternion_Predictor()
@@ -129,6 +139,13 @@ class PRSNet(nn.Module):
         self.quaternion_predictor0.set_initial_bias(torch.tensor([cos_theta, sin_theta, 0., 0.]))
         self.quaternion_predictor1.set_initial_bias(torch.tensor([cos_theta, 0., sin_theta, 0.]))
         self.quaternion_predictor2.set_initial_bias(torch.tensor([cos_theta, 0., 0., sin_theta]))
+        # self.quaternion_predictor0.set_initial_weight(torch.tensor([0., 0., 0., 0.]))
+        # self.quaternion_predictor1.set_initial_weight(torch.tensor([0., 0., 0., 0.]))
+        # self.quaternion_predictor2.set_initial_weight(torch.tensor([0., 0., 0., 0.]))
+    
+    def normalize(self, batch_single_feature):
+        ut = batch_single_feature.transpose(0, 1) / torch.norm(batch_single_feature, dim=1)
+        return ut.transpose(0, 1)
         
     def forward(self, batch_voxels):
         if batch_voxels.dim == 4:
@@ -142,17 +159,17 @@ class PRSNet(nn.Module):
         plane1 = self.plane_predictor1(out0)
         plane2 = self.plane_predictor2(out0)
         
-        plane0 = plane0.reshape(M, 4)
-        plane1 = plane0.reshape(M, 4)
-        plane2 = plane0.reshape(M, 4)
+        plane0 = self.normalize(plane0.reshape(M, 4))
+        plane1 = self.normalize(plane0.reshape(M, 4))
+        plane2 = self.normalize(plane0.reshape(M, 4))
         
         quat0 = self.quaternion_predictor0(out0)
         quat1 = self.quaternion_predictor1(out0)
         quat2 = self.quaternion_predictor2(out0)
         
-        quat0 = quat0.reshape(M, 4)
-        quat1 = quat1.reshape(M, 4)
-        quat2 = quat2.reshape(M, 4)
+        quat0 = self.normalize(quat0.reshape(M, 4))
+        quat1 = self.normalize(quat1.reshape(M, 4))
+        quat2 = self.normalize(quat2.reshape(M, 4))
         
         return torch.stack([plane0, plane1, plane2], dim=1), torch.stack([quat0, quat1, quat2], dim=1)
     
@@ -326,10 +343,10 @@ class PRSNet_Reg_Loss(nn.Module):
         super().__init__()
     
     def forward(self, batch_planar_features, batch_quat_features):
-        # TODO: Compute Regularization Loss
         '''
         `batch_planar_features` should have a shape of `(M, D, 4)`
         '''
+        # TODO: Compute Regularization Loss
         M = batch_planar_features.shape[0]
         D1 = batch_planar_features.shape[1]
         D2 = batch_quat_features.shape[1]
@@ -360,6 +377,7 @@ class PRSNet_Loss(nn.Module):
         super().__init__()
         self.symmetry_loss = PRSNet_Symm_Dist_Loss()
         self.reg_loss = PRSNet_Reg_Loss()
+        self.w_param_penalty = 1
         self.w_r = w_r
     
     def forward(self, batch_planar_features, batch_quat_features, batch_grid_points, batch_sample_points):
@@ -371,7 +389,12 @@ class PRSNet_Loss(nn.Module):
             batch_grid_points = batch_grid_points.unsqueeze(0)
         if batch_sample_points.dim == 2:
             batch_sample_points = batch_sample_points.unsqueeze(0)
+        M = batch_planar_features.shape[0]
             
         symm_loss = self.symmetry_loss(batch_planar_features, batch_quat_features, batch_grid_points, batch_sample_points)
         reg_loss = self.reg_loss(batch_planar_features, batch_quat_features)
-        return symm_loss + self.w_r * reg_loss
+        
+            #    + self.w_param_penalty * torch.mean(torch.norm(batch_planar_features, dim=2)) \
+            #    + self.w_param_penalty * torch.mean(torch.norm(batch_planar_features, dim=2)) \
+        return symm_loss \
+               + self.w_r * reg_loss

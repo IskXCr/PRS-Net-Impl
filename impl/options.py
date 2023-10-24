@@ -12,6 +12,6 @@ class Options:
         self.batch_size = 32
         self.num_epochs = 100
         
-        self.learning_rate = 0.01
+        self.learning_rate = 0.001
         self.weight_decay = 0.005
         self.w_r = 25

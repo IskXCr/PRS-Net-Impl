@@ -48,8 +48,10 @@ model = PRSNet()
 model.to(device=device, dtype=train_options.dtype)
 
 criterion = PRSNet_Loss(train_options.w_r)
-optimizer = torch.optim.Adam(model.parameters(), lr=train_options.learning_rate, weight_decay=train_options.weight_decay)
+optimizer = torch.optim.Adam(model.parameters(), lr=train_options.learning_rate)
+
 start_epoch = 0
+
 if train_options.checkpoint_src:
     checkpoint = torch.load(train_options.checkpoint_src, map_location=device)
     
@@ -58,7 +60,7 @@ if train_options.checkpoint_src:
     start_epoch = checkpoint['epoch']
     train_options.w_r = checkpoint['w_r']
     criterion.w_r = checkpoint['w_r']
-    train_options.sample_num = checkpoint['sample_num']
+    model.train()
     
     print(f'The model has been loaded from: {train_options.checkpoint_src}')
 else:
@@ -80,13 +82,19 @@ if os.path.exists(train_options.checkpoint_dst):
     else:
         print(f'Unrecognized option: {ans}. Exiting.')
         exit(1)
+elif not os.path.exists(os.path.dirname(train_options.checkpoint_dst)):
+    path = os.mkdir(os.path.dirname(train_options.checkpoint_dst))
+    print(f"Making directory: {path}")
 
 print('Loading data...')
 raw_data = vp.read_dataset_from_path(train_options.data_path)
 
-train_dataset = vp.CustomVoxelDataset(raw_data, train_options.sample_num)
-train_loader = DataLoader(train_dataset, batch_size=train_options.batch_size, shuffle=True, collate_fn=vp.collate_data_list)
-print('Completed data loading.')
+train_dataset = vp.CustomVoxelDataset(raw_data)
+train_loader = DataLoader(train_dataset, 
+                          batch_size=train_options.batch_size,
+                          shuffle=True,
+                          num_workers=8,
+                          collate_fn=vp.collate_data_list)
 
 # If there no data, quit right now.
 if not raw_data:
@@ -95,7 +103,8 @@ if not raw_data:
 
 # Training
 for epoch in range(start_epoch, train_options.num_epochs):
-    for i, (data_indices, mesh, omap, grid_points, offset_vector, sample_points) in enumerate(train_loader):
+    print(f'Epoch [{epoch + 1}/{train_options.num_epochs}] - ', end='')
+    for i, (data_indices, omap, grid_points, offset_vector, sample_points) in enumerate(train_loader):
         omap = omap.to(device=device, dtype=train_options.dtype)
         grid_points = grid_points.to(device, dtype=train_options.dtype)
         offset_vector = offset_vector.to(device, dtype=train_options.dtype)
@@ -107,13 +116,12 @@ for epoch in range(start_epoch, train_options.num_epochs):
         loss.backward()
         optimizer.step()
     
-    print(f'Epoch [{epoch + 1}/{train_options.num_epochs}, Loss: {"{:.4f}".format(loss.item())}]')
+    print(f'Loss: {"{:.4f}".format(loss.item())}')
     torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'w_r': criterion.w_r,
-                'sample_num': train_options.sample_num
                 }, train_options.checkpoint_dst)
 
 if os.path.exists(train_options.checkpoint_dst):
