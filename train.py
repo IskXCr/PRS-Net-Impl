@@ -14,6 +14,7 @@ parser.add_argument('--num_epochs', default=100, type=int, help='Number of epoch
 parser.add_argument('--dtype', dest='dtype', default='float32', help='The target fp type to use. Allowed: float16, float32, float64')
 
 parser.add_argument('--weight_reg', dest='w_r', default=25, type=float, help='The default w_r for summing symmetry distance loss and regularization loss. If not specified, use 25.')
+parser.add_argument('--learning_rate', dest='l_r', default=0.01, type=float, help='Learning rate to use.')
 
 args = parser.parse_args()
 
@@ -24,6 +25,7 @@ train_options.data_path = args.data_path
 train_options.batch_size = args.batch_size
 train_options.num_epochs = args.num_epochs
 train_options.w_r = args.w_r
+train_options.learning_rate = args.l_r
 if args.dtype == 'float16':
     train_options.dtype = torch.float16
 elif args.dtype == 'float32':
@@ -69,6 +71,8 @@ else:
 print('========Model Info========')
 print(model)
 print('=====End of Model Info====')
+
+print(train_options)
 
 # Test if the destination path exists.
 if os.path.exists(train_options.checkpoint_dst):

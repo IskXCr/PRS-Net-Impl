@@ -73,8 +73,8 @@ class PRSNet_Plane_Predictor(nn.Module):
     def set_initial_bias(self, feature):
         self.fc2.bias.data = feature.clone().detach()
         
-    def set_initial_weight(self):
-        self.fc2.weight.data = torch.zeros(4, 16)
+    def set_initial_weight(self, value=0.000):
+        self.fc2.bias.data.fill_(value)
         
     def forward(self, features):
         out = self.fc0(features)
@@ -100,7 +100,7 @@ class PRSNet_Quaternion_Predictor(nn.Module):
         self.fc2 = nn.Linear(16, 4)
     
     def set_initial_bias(self, feature):
-        self.fc2.bias.data = feature.clone()
+        self.fc2.bias.data = feature.clone().detach()
         
     def forward(self, features):
         out = self.fc0(features)
@@ -188,29 +188,24 @@ class PRSNet_Symm_Dist_Loss(nn.Module):
         Return a tensor of shape `(M, 3, N)`, where
         - `M` is the number of samples inside the batch,
         - `N` is the number of queries inside a single sample.
+        
+        Should return a tensor of shape `(4, M * N)
         '''
         M = batch_query_points.shape[0]
         N = batch_query_points.shape[1]
         
         device = batch_query_points.device
+        dtype = batch_query_points.dtype
         
-        tmp0 = batch_query_points.transpose(1, 2)
-        xs = tmp0[:, 0].reshape((1, -1)).contiguous()
-        ys = tmp0[:, 1].reshape((1, -1)).contiguous()
-        zs = tmp0[:, 2].reshape((1, -1)).contiguous()
+        tmp0 = batch_query_points.transpose(1, 2).contiguous() * 16.0 + 16.0
         
-        x = (xs * 16).floor().to(torch.int).clamp(-16, 15) + 16
-        y = (ys * 16).floor().to(torch.int).clamp(-16, 15) + 16
-        z = (zs * 16).floor().to(torch.int).clamp(-16, 15) + 16
+        tmp0 = tmp0.floor().clamp(0, 31).to(torch.int)
         
-        x = x.reshape((M, 1, N))
-        y = y.reshape((M, 1, N))
-        z = z.reshape((M, 1, N))
+        tmp = tmp0.permute(1, 0, 2).reshape(3, -1)
         
-        result0 = torch.arange(0, M, dtype=x.dtype, device=device).reshape(M, 1, 1).repeat([1, 1, N])
-        result1 = torch.cat([x, y, z], dim=1)
+        midx = torch.arange(0, M, device=device, dtype=int).reshape(M, 1).repeat(1, N).reshape(1, -1)
         
-        return torch.cat([*torch.cat([result0, result1], dim=1)], dim=1)
+        return torch.cat([midx, tmp], dim=0)
 
     def compute_batch_dist_sum(self, batch_grid_points, batch_query_points):
         '''
@@ -219,15 +214,17 @@ class PRSNet_Symm_Dist_Loss(nn.Module):
         
         Return summed_distance of shape (M, 1), where
         - `M` is batch size.
+        
         '''
-        M = batch_grid_points.shape[0]
+        M = batch_query_points.shape[0]
+        N = batch_query_points.shape[1]
         m, x, y, z = self.compute_batch_std_grid_indices(batch_query_points)
         
-        g = batch_grid_points[m, x, y, z].reshape(-1, 3)
-        q = batch_query_points.reshape(-1, 3)
+        g = batch_grid_points[m, x, y, z].reshape(M, N, 3)
+        q = batch_query_points
         batch_displacements = g - q
-        vector_norm = torch.linalg.vector_norm(batch_displacements, dim=1)
-        result = torch.sum(vector_norm, dim=0)
+        vector_norm = torch.linalg.vector_norm(batch_displacements, dim=2)
+        result = torch.sum(vector_norm, dim=1)
         
         return result
 
@@ -320,16 +317,19 @@ class PRSNet_Symm_Dist_Loss(nn.Module):
     
     def forward(self, batch_planar_features, batch_quat_features, batch_grid_points, batch_sample_points):
         M = batch_sample_points.shape[0]
-        N = batch_sample_points.shape[1]
-        D0 = batch_planar_features.shape[1]
-        D1 = batch_quat_features.shape[1]
+        N = batch_sample_points.shape[1] # N samples
+        D0 = batch_planar_features.shape[1] # number of planes predicted
+        D1 = batch_quat_features.shape[1] # number of quaternions predicted
+        
+        assert batch_grid_points.shape == (M, 32, 32, 32, 3)
+        assert batch_sample_points.shape == (M, N, 3)
         
         p_trans_points = self.apply_planar_transform(batch_planar_features, batch_sample_points)
-        p_losses = self.compute_batch_dist_sum(batch_grid_points, p_trans_points.reshape(M, -1, 3))
+        p_losses = self.compute_batch_dist_sum(batch_grid_points, p_trans_points.reshape(M, -1, 3)).sum()
         planar_loss = torch.sum(p_losses)
         
         q_trans_points = self.apply_quaternion_rotation(batch_quat_features, batch_sample_points)
-        q_losses = self.compute_batch_dist_sum(batch_grid_points, q_trans_points.reshape(M, -1, 3))
+        q_losses = self.compute_batch_dist_sum(batch_grid_points, q_trans_points.reshape(M, -1, 3)).sum()
         quat_loss = torch.sum(q_losses)
         
         return planar_loss + quat_loss
@@ -352,19 +352,19 @@ class PRSNet_Reg_Loss(nn.Module):
         D2 = batch_quat_features.shape[1]
         device = batch_planar_features.device
         
-        m1_norm = torch.norm(batch_planar_features[:, :, 0:3], dim=2).reshape(M, D1, 1)
-        m1 = (batch_planar_features[:, :, 0:3] / m1_norm)
+        # m1_norm = torch.norm(batch_planar_features[:, :, 0:3], dim=2).reshape(M, D1, 1)
+        # m1 = (batch_planar_features[:, :, 0:3] / m1_norm)
+        m1 = batch_planar_features[:, :, 0:3]
         
         m1_m1t = torch.einsum('bij, bjk->bik', m1, m1.transpose(1, 2).contiguous())
-        m1_id_mat = torch.eye(D1, device=device, requires_grad=True).reshape(1, D1, D1).repeat([M, 1, 1])
+        m1_id_mat = torch.eye(D1, device=device).reshape(1, D1, D1).repeat([M, 1, 1])
         A = m1_m1t - m1_id_mat
-        
         
         m2_norm = torch.norm(batch_planar_features[:, :, 1:4], dim=2).reshape(M, D1, 1)
         m2 = (batch_planar_features[:, :, 1:4] / m2_norm)
         
         m2_m2t = torch.einsum('bij, bjk->bik', m2, m2.transpose(1, 2).contiguous())
-        m2_id_mat = torch.eye(D2, device=device, requires_grad=True).reshape(1, D1, D1).repeat([M, 1, 1])
+        m2_id_mat = torch.eye(D2, device=device).reshape(1, D1, D1).repeat([M, 1, 1])
         B = m2_m2t - m2_id_mat
         
         loss = torch.norm(A, dim=(1, 2)) + torch.norm(B, dim=(1, 2))
@@ -381,6 +381,10 @@ class PRSNet_Loss(nn.Module):
         self.w_r = w_r
     
     def forward(self, batch_planar_features, batch_quat_features, batch_grid_points, batch_sample_points):
+        '''
+        `batch_grid_points`: of size `Mx(32**3)x3`
+        `batch_sample_points`: of size `MxNx3`
+        '''
         if batch_planar_features.dim == 3:
             batch_planar_features = batch_planar_features.unsqueeze(0)
         if batch_quat_features.dim == 3:

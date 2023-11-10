@@ -90,7 +90,7 @@ def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()
     for voxel in voxel_grid.get_voxels():
         # print(voxel.grid_index)
         omap[tuple(voxel.grid_index)] = 1
-
+    
     std_centers = compute_standard_grid_centers()
     offset_vec = compute_offset_vector_from_std(std_centers, voxel_grid)
     
@@ -155,6 +155,7 @@ def read_mesh_from_file(src_path):
     mesh = o3d.geometry.TriangleMesh()
     mesh.triangles = mesh_dict['triangles']
     mesh.vertices = mesh_dict['vertices']
+    mesh.compute_triangle_normals()
     return mesh
 
 
@@ -196,8 +197,7 @@ def prepare_single_data(data_entry):
     Accepts a single `data_entry` : `tuple(path, index)`.
     '''
     # print(f'Preparing: "voxel_data_{data_entry[1]}"')
-    path = data_entry[0]
-    index = data_entry[1]
+    path, index = data_entry
     data = torch.load(path)
     
     omap = data['omap']
@@ -206,24 +206,6 @@ def prepare_single_data(data_entry):
     sample_points = data['sample_points']
     
     return (index, omap, grid_points, offset_vec, sample_points)
-
-
-@DeprecationWarning
-def prepare_dataset(raw_data):
-    '''
-    Input: `tuple(mesh, omap, grid_points, offset_vector`
-    
-    Return: `tuple(mesh, omap, grid_points, offset_vector, sample_points)`
-    '''
-    raw_data.sort()
-    # Test
-    raw_data = raw_data[0:1000]
-    print(f'Preparing dataset... Only the first {len(raw_data)} are loaded.')
-    result_lst = [prepare_single_data(data_entry) for data_entry in raw_data]
-    
-    print(f'{len(result_lst)} dataset(s) have been prepared. ')
-    
-    return result_lst
 
 
 class CustomVoxelDataset(Dataset):

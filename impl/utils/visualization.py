@@ -16,7 +16,7 @@ def get_trans_mat(normal):
     result[0:3, 2] = z
     return result
 
-def visualize_planar_symmetry(mesh, plane):
+def visualize_planar_symmetry(geometry, plane):
     '''
     `plane` should be a (4, ) numpy array, describing the equation Ax + By + Cz + D = 0.
     '''
@@ -26,21 +26,21 @@ def visualize_planar_symmetry(mesh, plane):
     else:
         zs = ((-coords_mat @ plane[0:2] - plane[3]) / plane[2]).reshape(-1, 1)
         
-    mesh.compute_vertex_normals()
+    # geometry.compute_vertex_normals()
+    normal = plane[0:3] / np.linalg.norm(plane[0:3])
     
     plane_mesh = o3d.geometry.TriangleMesh.create_box(width=1, height=1, depth=0.01)
     plane_mesh.paint_uniform_color(np.array([0.1, 0.1, 0.4]))
     plane_mesh.translate(np.array([-.5, -.5, 0.])) 
-    normal = plane[0:3] / np.linalg.norm(plane[0:3])
     plane_mesh.transform(get_trans_mat(normal))
     plane_mesh.translate(plane[3] * normal)
     
     print(f'[visualization.py] Drawing symmetry plane {plane}')
     frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    vis.draw_geometries([plane_mesh, mesh, frame])
+    vis.draw_geometries([plane_mesh, geometry, frame])
     
     
-def visualize_quat_symmetry(mesh, quaternion):
+def visualize_quat_symmetry(geometry, quaternion):
     '''
     `quaternion` should be a (4, ) numpy array, describing the quaternion `a + bi + cj + dk`.
     '''
@@ -50,6 +50,11 @@ def visualize_quat_symmetry(mesh, quaternion):
     else:
         normal = normal / np.sin(np.arccos(normal[0]))
         normal = normal / np.linalg.norm(normal)
+    
     arrow = o3d.geometry.TriangleMesh.create_arrow(cylinder_radius=.2, cone_radius=.25, cylinder_height=.8, cone_height=.2)
+    arrow.transform(get_trans_mat(normal))
+    arrow.paint_uniform_color([.1, .7, .7])
+    
     print(f'[visualization.py] Drawing symmetry axis {normal}')
-    vis.draw_geometries([arrow, mesh])
+    frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    vis.draw_geometries([arrow, geometry, frame])

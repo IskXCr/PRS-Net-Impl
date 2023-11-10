@@ -56,6 +56,8 @@ print('========Model Info========')
 print(model)
 print('=====End of Model Info====')
 
+print(test_options)
+
 print('Loading data...')
 raw_data = vp.read_dataset_from_path(test_options.data_path)
 
