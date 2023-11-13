@@ -11,8 +11,10 @@ def normalize_mesh(mesh):
     '''
     Normalize mesh in-place.
     '''
-    center = mesh.get_center()
-    mesh.translate(-center)
+    AABB = mesh.get_axis_aligned_bounding_box()
+    min_bounds = AABB.get_min_bound()
+    max_bounds = AABB.get_max_bound()
+    mesh.translate(-(min_bounds + max_bounds) / 2)
     extent = mesh.get_axis_aligned_bounding_box().get_max_extent()
     if extent == 0.0:
         raise ValueError("Invalid extent.")
@@ -33,19 +35,19 @@ def compute_standard_grid_centers():
     return torch.tensor(std_centers)
 
 
-def compute_offset_vector_from_std(std_centers, voxel_grid):
-    '''
-    Given centers for the standard grid, compute the offset vector from the standard grid to the given voxel grid.
-    '''
-    voxels = voxel_grid.get_voxels()
-    base = torch.tensor([1024, 32, 1])
-    n_voxels = len(voxels)
+# def compute_offset_vector_from_std(std_centers, voxel_grid):
+#     '''
+#     Given centers for the standard grid, compute the offset vector from the standard grid to the given voxel grid.
+#     '''
+#     voxels = voxel_grid.get_voxels()
+#     base = torch.tensor([1024, 32, 1])
+#     n_voxels = len(voxels)
     
-    vcenters = torch.tensor(np.array([voxel_grid.get_voxel_center_coordinate(voxel.grid_index) for voxel in voxels]))
-    orig_centers = torch.tensor(np.array([std_centers[np.dot(voxel.grid_index, base)] for voxel in voxels]))
+#     vcenters = torch.tensor(np.array([voxel_grid.get_voxel_center_coordinate(voxel.grid_index) for voxel in voxels]))
+#     orig_centers = torch.tensor(np.array([std_centers[np.dot(voxel.grid_index, base)] for voxel in voxels]))
     
-    offset_vec = torch.mean(vcenters - orig_centers, dim=0)
-    return offset_vec
+#     offset_vec = torch.mean(vcenters - orig_centers, dim=0)
+#     return offset_vec
 
 
 def compute_closest_points_to_grids(mesh, grid_centers):
@@ -63,16 +65,16 @@ def compute_closest_points_to_grids(mesh, grid_centers):
     return torch.tensor(ans['points'].numpy())
 
 
-def sample(mesh, offset_vec, sample_num=1000):
+def sample(mesh, sample_num=1000):
     '''
     Return sampled points.
     '''
     pcd = mesh.sample_points_uniformly(number_of_points=sample_num)
-    sample_points = np.asarray(pcd.points)[:] - offset_vec.numpy()
+    sample_points = np.asarray(pcd.points)
     return sample_points
 
 
-def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()):
+def create_data_from_file(file_path, std_centers=compute_standard_grid_centers(), voxel_sample_num=3000):
     '''
     Read a `.obj` file specified by `file_path`. 
     
@@ -82,23 +84,20 @@ def create_data_from_file(file_path, std_centers=compute_standard_grid_centers()
     mesh = o3d.io.read_triangle_mesh(file_path)
     normalize_mesh(mesh)
     
-    # sample 1000 points uniformly, as suggested
-    pcd = mesh.sample_points_uniformly(number_of_points=1000)
+    pcd = mesh.sample_points_uniformly(number_of_points=voxel_sample_num)
     voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=float(2/32 + 0.001))
     omap = torch.zeros((32, 32, 32), dtype=torch.int)
     
     for voxel in voxel_grid.get_voxels():
         # print(voxel.grid_index)
         omap[tuple(voxel.grid_index)] = 1
-    
+
     std_centers = compute_standard_grid_centers()
-    offset_vec = compute_offset_vector_from_std(std_centers, voxel_grid)
     
-    biased_centers = std_centers + offset_vec
-    grid_points = compute_closest_points_to_grids(mesh, biased_centers)[:] - offset_vec
-    sample_points = torch.tensor(sample(mesh, offset_vec).reshape(-1, 3))
+    grid_points = compute_closest_points_to_grids(mesh, std_centers)
+    sample_points = torch.tensor(sample(mesh).reshape(-1, 3))
     
-    return mesh, omap, grid_points, offset_vec, sample_points
+    return mesh, omap, grid_points, sample_points
 
 
 def preprocess_files(src_path, dst_path):
@@ -128,7 +127,7 @@ def preprocess_files(src_path, dst_path):
         dst = os.path.join(dst_path, identifier + str(id))
         print(f'Processing: {path} -> {dst}')
         try:
-            mesh, omap, grid_points, offset_vec, sample_points = create_data_from_file(path)
+            mesh, omap, grid_points, sample_points = create_data_from_file(path)
             torch.save({
                         'triangles': np.asarray(mesh.triangles),
                         'vertices': np.asarray(mesh.vertices),
@@ -136,7 +135,6 @@ def preprocess_files(src_path, dst_path):
             torch.save({
                         'omap': omap,
                         'grid_points': grid_points,
-                        'offset_vec': offset_vec,
                         'sample_points': sample_points
                         }, dst + custom_dat_ext)
             
@@ -153,8 +151,8 @@ def read_mesh_from_file(src_path):
     '''
     mesh_dict = torch.load(src_path)
     mesh = o3d.geometry.TriangleMesh()
-    mesh.triangles = mesh_dict['triangles']
-    mesh.vertices = mesh_dict['vertices']
+    mesh.triangles = o3d.utility.Vector3iVector(mesh_dict['triangles'])
+    mesh.vertices = o3d.utility.Vector3dVector(mesh_dict['vertices'])
     mesh.compute_triangle_normals()
     return mesh
 
@@ -202,10 +200,9 @@ def prepare_single_data(data_entry):
     
     omap = data['omap']
     grid_points = data['grid_points']
-    offset_vec = data['offset_vec']
     sample_points = data['sample_points']
     
-    return (index, omap, grid_points, offset_vec, sample_points)
+    return (index, omap, grid_points, sample_points)
 
 
 class CustomVoxelDataset(Dataset):
@@ -223,22 +220,19 @@ def collate_data_list(raw_dataset):
     data_index_lst = []
     omap_lst = []
     grid_points_lst = []
-    offset_vector_lst = []
     sample_points_lst = []
     
     for entry in raw_dataset:
         data_index_lst.append(entry[0])
         omap_lst.append(entry[1].reshape(1, 1, 32, 32, 32))
         grid_points_lst.append(entry[2].reshape(1, 32, 32, 32, 3))
-        offset_vector_lst.append(entry[3].reshape(1, 1, 3))
-        sample_points_lst.append(entry[4].reshape(1, -1, 3))
+        sample_points_lst.append(entry[3].reshape(1, -1, 3))
         
     # batch_mesh = torch.concat(mesh_lst, dim=0)
     batch_omap = torch.concat(omap_lst, dim=0)
     batch_grid_points = torch.concat(grid_points_lst, dim=0)
-    batch_offset_vector = torch.concat(offset_vector_lst, dim=0)
     batch_sample_points = torch.concat(sample_points_lst, dim=0)
-    return data_index_lst, batch_omap, batch_grid_points, batch_offset_vector, batch_sample_points
+    return data_index_lst, batch_omap, batch_grid_points, batch_sample_points
 
 
 if __name__ == '__main__':

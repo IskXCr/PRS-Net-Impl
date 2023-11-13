@@ -325,14 +325,14 @@ class PRSNet_Symm_Dist_Loss(nn.Module):
         assert batch_sample_points.shape == (M, N, 3)
         
         p_trans_points = self.apply_planar_transform(batch_planar_features, batch_sample_points)
-        p_losses = self.compute_batch_dist_sum(batch_grid_points, p_trans_points.reshape(M, -1, 3)).sum()
+        p_losses = self.compute_batch_dist_sum(batch_grid_points, p_trans_points.reshape(M, -1, 3))
         planar_loss = torch.sum(p_losses)
         
         q_trans_points = self.apply_quaternion_rotation(batch_quat_features, batch_sample_points)
-        q_losses = self.compute_batch_dist_sum(batch_grid_points, q_trans_points.reshape(M, -1, 3)).sum()
+        q_losses = self.compute_batch_dist_sum(batch_grid_points, q_trans_points.reshape(M, -1, 3))
         quat_loss = torch.sum(q_losses)
         
-        return planar_loss + quat_loss
+        return (planar_loss + quat_loss).mean()
     
 
 class PRSNet_Reg_Loss(nn.Module):
@@ -369,7 +369,7 @@ class PRSNet_Reg_Loss(nn.Module):
         
         loss = torch.norm(A, dim=(1, 2)) + torch.norm(B, dim=(1, 2))
         
-        return torch.sum(loss)
+        return loss.mean()
 
 
 class PRSNet_Loss(nn.Module):

@@ -66,10 +66,9 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=v
 
 # Inference
 with torch.no_grad():
-    for i, (data_indices, omap, grid_points, offset_vector, sample_points) in enumerate(test_loader):
+    for i, (data_indices, omap, grid_points, sample_points) in enumerate(test_loader):
         omap = omap.to(device=device, dtype=test_options.dtype)
         grid_points = grid_points.to(device, dtype=test_options.dtype)
-        offset_vector = offset_vector.to(device, dtype=test_options.dtype)
         sample_points = sample_points.to(device, dtype=test_options.dtype)
         
         p_features, q_features = model(omap)

@@ -2,6 +2,7 @@ import argparse
 import os
 
 import torch
+import torch.nn as nn
 from impl.options import Options
 
 parser = argparse.ArgumentParser(description='Train the PRSNet.')
@@ -47,6 +48,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
 model = PRSNet()
+if torch.cuda.device_count() > 1:
+  print("Using up to", torch.cuda.device_count(), "GPUs.")
+  # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
+  model = nn.DataParallel(model)
 model.to(device=device, dtype=train_options.dtype)
 
 criterion = PRSNet_Loss(train_options.w_r)
@@ -75,20 +80,20 @@ print('=====End of Model Info====')
 print(train_options)
 
 # Test if the destination path exists.
-if os.path.exists(train_options.checkpoint_dst):
-    print(f'The destination path already has a checkpoint file: {train_options.checkpoint_dst}')
-    ans = input(f'Continuing this operation would overwrite this checkpoint. Are you sure [Y/n]? ')
-    if ans == 'Y' or ans == 'y':
-        pass
-    elif ans == 'N' or ans == 'n':
-        print(f'Operation has been cancelled by the user.')
-        exit(1)
-    else:
-        print(f'Unrecognized option: {ans}. Exiting.')
-        exit(1)
-elif not os.path.exists(os.path.dirname(train_options.checkpoint_dst)):
-    path = os.mkdir(os.path.dirname(train_options.checkpoint_dst))
-    print(f"Making directory: {path}")
+# if os.path.exists(train_options.checkpoint_dst):
+#     print(f'The destination path already has a checkpoint file: {train_options.checkpoint_dst}')
+#     ans = input(f'Continuing this operation would overwrite this checkpoint. Are you sure [Y/n]? ')
+#     if ans == 'Y' or ans == 'y':
+#         pass
+#     elif ans == 'N' or ans == 'n':
+#         print(f'Operation has been cancelled by the user.')
+#         exit(1)
+#     else:
+#         print(f'Unrecognized option: {ans}. Exiting.')
+#         exit(1)
+# elif not os.path.exists(os.path.dirname(train_options.checkpoint_dst)):
+#     path = os.mkdir(os.path.dirname(train_options.checkpoint_dst))
+#     print(f"Making directory: {path}")
 
 print('Loading data...')
 raw_data = vp.read_dataset_from_path(train_options.data_path)
@@ -97,7 +102,8 @@ train_dataset = vp.CustomVoxelDataset(raw_data)
 train_loader = DataLoader(train_dataset, 
                           batch_size=train_options.batch_size,
                           shuffle=True,
-                          num_workers=8,
+                          num_workers=os.cpu_count(),
+                          pin_memory=True,
                           collate_fn=vp.collate_data_list)
 
 # If there no data, quit right now.
@@ -108,10 +114,9 @@ if not raw_data:
 # Training
 for epoch in range(start_epoch, train_options.num_epochs):
     print(f'Epoch [{epoch + 1}/{train_options.num_epochs}] - ', end='')
-    for i, (data_indices, omap, grid_points, offset_vector, sample_points) in enumerate(train_loader):
+    for i, (data_indices, omap, grid_points, sample_points) in enumerate(train_loader):
         omap = omap.to(device=device, dtype=train_options.dtype)
         grid_points = grid_points.to(device, dtype=train_options.dtype)
-        offset_vector = offset_vector.to(device, dtype=train_options.dtype)
         sample_points = sample_points.to(device, dtype=train_options.dtype)
         
         optimizer.zero_grad()

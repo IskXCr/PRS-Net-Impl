@@ -2,6 +2,8 @@ obj_data
 obj_test_data
 voxel_data
 ict_data
+test_data
+train_data
 
 func_test
 
